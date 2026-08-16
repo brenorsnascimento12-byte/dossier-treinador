@@ -25,7 +25,11 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+      # enablement liga o GitHub Pages automaticamente na primeira execução,
+      # sem ser preciso mexer nas Settings do repositório.
       - uses: actions/configure-pages@v5
+        with:
+          enablement: true
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
