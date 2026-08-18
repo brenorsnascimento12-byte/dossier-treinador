@@ -1,8 +1,9 @@
-import { useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { formatarCurto, hoje } from '../lib/datas';
 import { Area, Campo, Escolha, Segmentado, Texto } from '../componentes/ui';
-import { exercicios, novoId, pastas, useColecao } from '../lib/store';
-import type { PaginaPdf } from '../lib/pdf';
+import { exercicios, novoId, pastas, sessoes, useColecao } from '../lib/store';
+import type { PlanoTreino } from '../lib/dossier';
 import {
   analisarTabela,
   analisarTexto,
@@ -10,10 +11,19 @@ import {
   dividirTexto,
   linhaParaExercicio,
   mapearColunas,
+  marcarRepetidos,
+  representantes,
+  type ChaveRepetido,
   type ExercicioBruto,
   type Separador,
 } from '../lib/importar';
-import { CATEGORIAS_EX, type CategoriaEx, type Pasta } from '../lib/types';
+import {
+  CATEGORIAS_EX,
+  type BlocoSessao,
+  type CategoriaEx,
+  type Exercicio,
+  type Pasta,
+} from '../lib/types';
 
 type Modo = 'PDF' | 'Imagens' | 'Texto' | 'Tabela';
 
@@ -42,20 +52,61 @@ function reduzirImagem(f: File, max = 1400): Promise<string> {
 export default function Importar() {
   const [modo, setModo] = useState<Modo>('PDF');
   const [revisao, setRevisao] = useState<ExercicioBruto[] | null>(null);
+  const [planos, setPlanos] = useState<PlanoTreino[] | null>(null);
+  const [chave, setChave] = useState<ChaveRepetido>('nome e conteúdo');
+  const [criarSessoes, setCriarSessoes] = useState(true);
   const [pastaId, setPastaId] = useState('');
   const listaPastas = useColecao<Pasta>('pastas');
+  const naBiblioteca = useColecao<Exercicio>('exercicios');
   const navegar = useNavigate();
 
-  function importar() {
-    const escolhidos = (revisao ?? []).filter((b) => b.incluir);
-    if (!escolhidos.length) return;
-    for (const b of escolhidos) exercicios.guardar(brutoParaExercicio(b, pastaId || undefined));
-    setRevisao(null);
-    navegar('/exercicios');
+  const escolherPasta = (v: string) => {
+    if (v !== '__nova__') return setPastaId(v);
+    const nome = prompt('Nome da pasta:', 'Importados');
+    if (!nome?.trim()) return;
+    const p = { id: novoId(), nome: nome.trim(), criadoEm: Date.now() };
+    pastas.guardar(p);
+    setPastaId(p.id);
+  };
+
+  const opcoesPasta = [
+    { v: '', t: '— sem pasta —' },
+    ...listaPastas.map((p) => ({ v: p.id, t: p.nome })),
+    { v: '__nova__', t: '+ Nova pasta…' },
+  ];
+
+  // ---------------------------------------------------------------- planos
+  if (planos) {
+    return (
+      <RevisaoPlanos
+        planos={planos}
+        chave={chave}
+        aoMudarChave={setChave}
+        criarSessoes={criarSessoes}
+        aoMudarCriarSessoes={setCriarSessoes}
+        naBiblioteca={naBiblioteca}
+        pastaId={pastaId}
+        opcoesPasta={opcoesPasta}
+        aoEscolherPasta={escolherPasta}
+        aoCancelar={() => setPlanos(null)}
+        aoConcluir={(destino) => {
+          setPlanos(null);
+          navegar(destino);
+        }}
+      />
+    );
   }
 
+  // ---------------------------------------------------------- exercicios soltos
   if (revisao) {
     const n = revisao.filter((b) => b.incluir).length;
+    const importar = () => {
+      for (const b of revisao.filter((x) => x.incluir))
+        exercicios.guardar(brutoParaExercicio(b, pastaId || undefined));
+      setRevisao(null);
+      navegar('/exercicios');
+    };
+
     return (
       <div className="coluna">
         <div className="cartao cartao-p linha envolve">
@@ -70,21 +121,8 @@ export default function Importar() {
           <Escolha
             label="Guardar na pasta"
             valor={pastaId}
-            opcoes={[
-              { v: '', t: '— sem pasta —' },
-              ...listaPastas.map((p) => ({ v: p.id, t: p.nome })),
-              { v: '__nova__', t: '+ Nova pasta…' },
-            ]}
-            aoMudar={(v) => {
-              if (v === '__nova__') {
-                const nome = prompt('Nome da pasta:', 'Importados');
-                if (nome?.trim()) {
-                  const p = { id: novoId(), nome: nome.trim(), criadoEm: Date.now() };
-                  pastas.guardar(p);
-                  setPastaId(p.id);
-                }
-              } else setPastaId(v);
-            }}
+            opcoes={opcoesPasta}
+            aoMudar={escolherPasta}
           />
           <button className="btn" onClick={() => setRevisao(null)}>
             Cancelar
@@ -122,10 +160,11 @@ export default function Importar() {
     );
   }
 
+  // ------------------------------------------------------------------ escolha
   return (
     <div className="coluna">
       <div className="cartao cartao-p">
-        <h2 style={{ marginBottom: 6 }}>Importar exercícios que já tens</h2>
+        <h2 style={{ marginBottom: 6 }}>Importar o que já tens</h2>
         <p className="mudo" style={{ marginBottom: 0 }}>
           Tudo é processado no teu dispositivo — nenhum ficheiro é enviado para lado nenhum.
           Escolhe o formato que consegues obter da tua aplicação atual.
@@ -140,7 +179,7 @@ export default function Importar() {
         />
       </div>
 
-      {modo === 'PDF' && <ModoPdf aoConcluir={setRevisao} />}
+      {modo === 'PDF' && <ModoPdf aoConcluirPlanos={setPlanos} aoConcluir={setRevisao} />}
       {modo === 'Imagens' && <ModoImagens aoConcluir={setRevisao} />}
       {modo === 'Texto' && <ModoTexto aoConcluir={setRevisao} />}
       {modo === 'Tabela' && <ModoTabela aoConcluir={setRevisao} />}
@@ -148,102 +187,346 @@ export default function Importar() {
   );
 }
 
+
 // ---------------------------------------------------------------------------
 
-function ModoPdf({ aoConcluir }: { aoConcluir: (b: ExercicioBruto[]) => void }) {
-  const [estado, setEstado] = useState<string | null>(null);
-  const [paginas, setPaginas] = useState<PaginaPdf[] | null>(null);
-  const [usarRecorte, setUsarRecorte] = useState(true);
-  const ref = useRef<HTMLInputElement>(null);
+/**
+ * Revisão dos planos de treino lidos.
+ *
+ * O mesmo exercício repete-se muito entre planos (o aquecimento é quase sempre
+ * o mesmo), por isso importamos cada um uma só vez e as sessões apontam todas
+ * para essa cópia única.
+ */
+function RevisaoPlanos({
+  planos,
+  chave,
+  aoMudarChave,
+  criarSessoes,
+  aoMudarCriarSessoes,
+  naBiblioteca,
+  pastaId,
+  opcoesPasta,
+  aoEscolherPasta,
+  aoCancelar,
+  aoConcluir,
+}: {
+  planos: PlanoTreino[];
+  chave: ChaveRepetido;
+  aoMudarChave: (c: ChaveRepetido) => void;
+  criarSessoes: boolean;
+  aoMudarCriarSessoes: (v: boolean) => void;
+  naBiblioteca: Exercicio[];
+  pastaId: string;
+  opcoesPasta: { v: string; t: string }[];
+  aoEscolherPasta: (v: string) => void;
+  aoCancelar: () => void;
+  aoConcluir: (destino: string) => void;
+}) {
+  // Todos os exercícios de todos os planos, achatados e pela ordem do papel.
+  const achatado = useMemo(
+    () => planos.flatMap((p, iPlano) => p.exercicios.map((e) => ({ ...e, iPlano }))),
+    [planos],
+  );
 
-  async function abrir(f: File) {
-    setEstado('A abrir o PDF…');
-    try {
-      // O pdf.js só é descarregado quando alguém importa mesmo um PDF.
-      const { lerPdf } = await import('../lib/pdf');
-      const p = await lerPdf(f, (feito, total) => setEstado(`A ler página ${feito} de ${total}…`));
-      setPaginas(p);
-      setEstado(null);
-    } catch (e) {
-      setEstado(`Não foi possível ler o PDF: ${e instanceof Error ? e.message : e}`);
+  const [marcados, setMarcados] = useState<(ExercicioBruto & { iPlano?: number })[]>([]);
+  const [reps, setReps] = useState<number[]>([]);
+
+  // Recalcula sempre que a regra de comparação muda.
+  useEffect(() => {
+    setMarcados(marcarRepetidos(achatado, naBiblioteca, chave));
+    setReps(representantes(achatado, chave));
+    // A biblioteca só interessa no arranque: não queremos remarcar a meio da revisão.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [achatado, chave]);
+
+  const unicos = marcados.map((b, i) => ({ b, i })).filter(({ i }) => reps[i] === i);
+  const aImportar = unicos.filter(({ b }) => b.incluir).length;
+  const jaExistiam = marcados.filter((b) => b.repetido === 'biblioteca').length;
+  const repetidosNoLote = marcados.filter((b) => b.repetido === 'lote').length;
+  const semData = planos.filter((p) => !p.data).length;
+
+  function importar() {
+    // 1) Cria os exercícios distintos e guarda o id de cada posição do lote.
+    const idPorIndice = new Map<number, string>();
+    for (const { b, i } of unicos) {
+      if (!b.incluir) continue;
+      const ex = brutoParaExercicio(b, pastaId || undefined);
+      exercicios.guardar(ex);
+      idPorIndice.set(i, ex.id);
     }
+
+    // 2) Cria uma sessão por plano, a apontar para os exercícios criados.
+    if (criarSessoes) {
+      let n = 0;
+      for (const [iPlano, plano] of planos.entries()) {
+        const blocos: BlocoSessao[] = [];
+        marcados.forEach((b, i) => {
+          if (b.iPlano !== iPlano) return;
+          blocos.push({
+            id: novoId(),
+            exercicioId: idPorIndice.get(reps[i]),
+            titulo: b.nome,
+            duracaoMin: b.duracaoMin ?? 0,
+            parte: blocos.length === 0 ? 'Inicial' : 'Fundamental',
+          });
+        });
+        if (!blocos.length) continue;
+
+        const notas = [
+          plano.microciclo && `Microciclo ${plano.microciclo}`,
+          plano.mesociclo && `Mesociclo ${plano.mesociclo}`,
+          plano.periodo,
+          plano.volume && `Volume ${plano.volume}`,
+          plano.material && `Material: ${plano.material}`,
+          plano.objetivosEspecificos &&
+            `Objetivos específicos:\n${plano.objetivosEspecificos}`,
+        ]
+          .filter(Boolean)
+          .join('\n');
+
+        sessoes.guardar({
+          id: novoId(),
+          numero: ++n,
+          data: plano.data ?? hoje(),
+          hora: plano.hora,
+          objetivoGeral: plano.objetivosGerais,
+          blocos,
+          presencas: {},
+          cargaPrevista: 3,
+          observacoes: notas || undefined,
+          criadoEm: Date.now(),
+        });
+      }
+    }
+
+    aoConcluir(criarSessoes ? '/treinos' : '/exercicios');
   }
 
-  function converter() {
-    if (!paginas) return;
-    const brutos = paginas
-      .map((p) => {
-        const b = analisarTexto(p.texto);
-        b.imagem = (usarRecorte && p.imagem) || p.pagina;
-        b.incluir = !!p.texto.trim();
-        if (!b.nome.trim()) b.nome = `Exercício — página ${p.numero}`;
-        return b;
-      })
-      .filter((b) => b.textoOriginal?.trim() || b.imagem);
-    aoConcluir(brutos);
+  return (
+    <div className="coluna">
+      <div className="cartao cartao-p coluna">
+        <div className="linha envolve">
+          <div>
+            <h2>
+              {planos.length} planos lidos · {achatado.length} exercícios
+            </h2>
+            <p className="mudo" style={{ margin: 0 }}>
+              <b>{aImportar}</b> exercícios distintos a importar
+              {repetidosNoLote > 0 && ` · ${repetidosNoLote} repetições entre planos`}
+              {jaExistiam > 0 && ` · ${jaExistiam} já estavam na biblioteca`}
+            </p>
+          </div>
+          <div className="espaco" />
+          <button className="btn" onClick={aoCancelar}>
+            Cancelar
+          </button>
+          <button
+            className="btn primario"
+            disabled={!aImportar && !criarSessoes}
+            onClick={importar}
+          >
+            Importar
+          </button>
+        </div>
+
+        <div className="forma">
+          <Escolha
+            label="Considerar repetido quando coincide"
+            valor={chave}
+            opcoes={['nome e conteúdo', 'nome'] as ChaveRepetido[]}
+            aoMudar={aoMudarChave}
+          />
+          <Escolha
+            label="Guardar exercícios na pasta"
+            valor={pastaId}
+            opcoes={opcoesPasta}
+            aoMudar={aoEscolherPasta}
+          />
+          <Campo label="Sessões de treino">
+            <label className="linha" style={{ gap: 8, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={criarSessoes}
+                onChange={(e) => aoMudarCriarSessoes(e.target.checked)}
+              />
+              <span className="mini">Criar também uma sessão por plano</span>
+            </label>
+          </Campo>
+        </div>
+
+        <p className="mini" style={{ margin: 0 }}>
+          {chave === 'nome'
+            ? 'Exercícios com o mesmo nome contam como o mesmo, mesmo que a descrição mude.'
+            : 'Só contam como repetidos os que têm o mesmo nome e o mesmo conteúdo.'}
+          {semData > 0 &&
+            ` ${semData} ${semData === 1 ? 'plano não tinha' : 'planos não tinham'} data preenchida — essas sessões ficam com a data de hoje.`}
+        </p>
+      </div>
+
+      {criarSessoes && (
+        <div className="cartao">
+          <div className="cartao-p" style={{ paddingBottom: 4 }}>
+            <h3>Sessões que vão ser criadas</h3>
+          </div>
+          <div className="rolar" style={{ maxHeight: 260 }}>
+            <table className="tabela">
+              <thead>
+                <tr>
+                  <th>Ficheiro</th>
+                  <th>Data</th>
+                  <th>Hora</th>
+                  <th>Exercícios</th>
+                </tr>
+              </thead>
+              <tbody>
+                {planos.map((p) => (
+                  <tr key={p.ficheiro}>
+                    <td className="truncar">{p.ficheiro}</td>
+                    <td>
+                      {p.data ? (
+                        formatarCurto(p.data)
+                      ) : (
+                        <span className="eti amarelo">sem data</span>
+                      )}
+                    </td>
+                    <td className="mudo">{p.hora ?? '—'}</td>
+                    <td>{p.exercicios.length}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      <h3>Exercícios distintos ({unicos.length})</h3>
+      <div className="coluna">
+        {unicos.map(({ b, i }) => (
+          <FichaRevisao
+            key={i}
+            b={b}
+            vezes={reps.filter((r) => r === i).length}
+            aoMudar={(novo) => setMarcados(marcados.map((x, j) => (j === i ? { ...x, ...novo } : x)))}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+
+function ModoPdf({
+  aoConcluirPlanos,
+  aoConcluir,
+}: {
+  aoConcluirPlanos: (p: PlanoTreino[]) => void;
+  aoConcluir: (b: ExercicioBruto[]) => void;
+}) {
+  const [estado, setEstado] = useState<string | null>(null);
+  const [erro, setErro] = useState<string | null>(null);
+  const ref = useRef<HTMLInputElement>(null);
+
+  async function abrir(files: File[]) {
+    setErro(null);
+    setEstado('A abrir…');
+    try {
+      // O pdf.js só é descarregado quando alguém importa mesmo um PDF.
+      const { lerPdf, recortar } = await import('../lib/pdf');
+      const { analisarPlano, pareceDossier } = await import('../lib/dossier');
+
+      const planos: PlanoTreino[] = [];
+      const soltos: ExercicioBruto[] = [];
+
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        setEstado(`A ler ${i + 1} de ${files.length}: ${f.name}`);
+        let paginas;
+        try {
+          paginas = await lerPdf(f);
+        } catch (e) {
+          // Um ficheiro problemático não deve travar os restantes.
+          console.warn(`Ignorado ${f.name}:`, e);
+          continue;
+        }
+        if (!paginas.length) continue;
+
+        if (pareceDossier(paginas)) {
+          const plano = analisarPlano(paginas, f.name);
+          for (const ex of plano.exercicios) {
+            if (!ex.recorte) continue;
+            const pg = paginas.find((p) => p.numero === ex.recorte!.pagina);
+            if (pg) ex.imagem = await recortar(pg.pagina, pg.largura, ex.recorte);
+          }
+          planos.push(plano);
+        } else {
+          // Formato desconhecido: uma página, um exercício.
+          for (const p of paginas) {
+            const b = analisarTexto(p.texto);
+            b.imagem = p.imagem || p.pagina;
+            if (!b.nome.trim()) b.nome = `${f.name} — página ${p.numero}`;
+            soltos.push(b);
+          }
+        }
+      }
+
+      setEstado(null);
+      if (planos.length) aoConcluirPlanos(planos);
+      else if (soltos.length) aoConcluir(soltos);
+      else setErro('Não consegui ler nenhum exercício destes ficheiros.');
+    } catch (e) {
+      setEstado(null);
+      setErro(e instanceof Error ? e.message : String(e));
+    }
   }
 
   return (
     <div className="cartao cartao-p coluna">
       <p className="mudo">
-        No Dossier do Treinador (ou noutra app), imprime ou exporta os exercícios para PDF —
-        normalmente <b>uma ficha por página</b>. Aqui, cada página vira um exercício: o texto é
-        lido e distribuído pelos campos, e o desenho fica como imagem.
+        Escolhe os <b>planos de treino em PDF</b> exportados do Dossier do Treinador — podes
+        selecionar dezenas de uma vez. Cada plano vira uma sessão de treino, e os exercícios que
+        lá estão vão para a tua biblioteca com o desenho, os objetivos e a descrição. Os
+        exercícios repetidos entre planos são detetados e importados uma só vez.
       </p>
 
       <div className="linha envolve">
-        <button className="btn primario" onClick={() => ref.current?.click()}>
-          Escolher ficheiro PDF
+        <button
+          className="btn primario"
+          disabled={!!estado}
+          onClick={() => ref.current?.click()}
+        >
+          {estado ? 'A processar…' : 'Escolher ficheiros PDF'}
         </button>
         {estado && <span className="mudo">{estado}</span>}
         <input
           ref={ref}
           type="file"
-          accept="application/pdf"
+          accept="application/pdf,.pdf"
+          multiple
           hidden
           onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) abrir(f);
+            const f = Array.from(e.target.files ?? []);
+            if (f.length) abrir(f);
             e.target.value = '';
           }}
         />
       </div>
 
-      {paginas && (
-        <>
-          <div className="linha envolve">
-            <span className="eti verde">{paginas.length} páginas lidas</span>
-            <label className="linha" style={{ gap: 6, cursor: 'pointer' }}>
-              <input
-                type="checkbox"
-                checked={usarRecorte}
-                onChange={(e) => setUsarRecorte(e.target.checked)}
-              />
-              <span className="mini">
-                Usar só o desenho quando for detetado (senão, a página inteira)
-              </span>
-            </label>
-            <div className="espaco" />
-            <button className="btn primario" onClick={converter}>
-              Continuar para revisão
-            </button>
-          </div>
-
-          <div className="grelha g4">
-            {paginas.slice(0, 8).map((p) => (
-              <div className="cartao cartao-p" key={p.numero}>
-                <div className="miniatura">
-                  <img src={(usarRecorte && p.imagem) || p.pagina} alt={`Página ${p.numero}`} />
-                </div>
-                <div className="mini" style={{ marginTop: 6 }}>
-                  Página {p.numero} · {p.texto.split('\n').length} linhas de texto
-                </div>
-              </div>
-            ))}
-          </div>
-          {paginas.length > 8 && <p className="mini">…e mais {paginas.length - 8} páginas.</p>}
-        </>
+      {erro && (
+        <div
+          className="cartao cartao-p"
+          style={{ background: 'var(--perigo-suave)', borderColor: 'transparent' }}
+        >
+          <b>Não foi possível ler:</b>
+          <p className="mini" style={{ margin: '4px 0 0', whiteSpace: 'pre-wrap' }}>
+            {erro}
+          </p>
+        </div>
       )}
+
+      <p className="mini">
+        Se o PDF não for do Dossier do Treinador, cada página é tratada como um exercício.
+      </p>
     </div>
   );
 }
@@ -454,9 +737,12 @@ function ModoTabela({ aoConcluir }: { aoConcluir: (b: ExercicioBruto[]) => void 
 function FichaRevisao({
   b,
   aoMudar,
+  vezes,
 }: {
   b: ExercicioBruto;
   aoMudar: (b: ExercicioBruto) => void;
+  /** Quantas vezes este exercicio aparece nos planos importados. */
+  vezes?: number;
 }) {
   const [expandido, setExpandido] = useState(false);
   const p = <K extends keyof ExercicioBruto>(k: K, v: ExercicioBruto[K]) =>
@@ -482,6 +768,11 @@ function FichaRevisao({
           </div>
         )}
         <div className="coluna" style={{ flex: 1, minWidth: 0, gap: 8 }}>
+          {(vezes ?? 0) > 1 && (
+            <span className="eti azul" style={{ alignSelf: 'flex-start' }}>
+              Usado em {vezes} sessoes
+            </span>
+          )}
           <div className="forma">
             <Texto label="Nome" valor={b.nome} aoMudar={(v) => p('nome', v)} largo />
             <Escolha

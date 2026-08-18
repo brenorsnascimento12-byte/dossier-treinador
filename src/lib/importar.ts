@@ -24,6 +24,14 @@ export interface ExercicioBruto {
   categoria?: CategoriaEx;
   imagem?: string;
   textoOriginal?: string;
+  /** Posicao original no documento, para manter a ordem da sessao. */
+  ordem?: number;
+  /** Pagina do PDF de onde veio, para recortar o desenho. */
+  pagina?: number;
+  /** Preenchido na revisao: este exercicio ja existe algures. */
+  repetido?: 'lote' | 'biblioteca';
+  /** Area do desenho na pagina do PDF, em pontos, para recortar depois. */
+  recorte?: { pagina: number; x: number; y: number; w: number; h: number };
   /** Marcado pelo utilizador na revisão antes de importar. */
   incluir: boolean;
 }
@@ -323,4 +331,59 @@ export function brutoParaExercicio(b: ExercicioBruto, pastaId?: string): Exercic
     imagem: b.imagem,
     criadoEm: Date.now(),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Deteção de repetidos
+// ---------------------------------------------------------------------------
+
+/** Como comparar dois exercícios para decidir se são o mesmo. */
+export type ChaveRepetido = 'nome' | 'nome e conteúdo';
+
+function resumo(s?: string) {
+  return normalizar(s ?? '').slice(0, 400);
+}
+
+export function assinatura(
+  e: { nome: string; objetivos?: string; descricao?: string },
+  chave: ChaveRepetido,
+): string {
+  const nome = normalizar(e.nome);
+  if (chave === 'nome') return nome;
+  return `${nome}|${resumo(e.objetivos)}|${resumo(e.descricao)}`;
+}
+
+/**
+ * Marca os exercícios que já existem — na biblioteca ou mais atrás no próprio
+ * lote — e desmarca-os para não serem importados. A primeira ocorrência fica.
+ */
+export function marcarRepetidos(
+  brutos: ExercicioBruto[],
+  existentes: { nome: string; objetivos?: string; descricao?: string }[],
+  chave: ChaveRepetido,
+): ExercicioBruto[] {
+  const naBiblioteca = new Set(existentes.map((e) => assinatura(e, chave)));
+  const vistos = new Set<string>();
+
+  return brutos.map((b) => {
+    const a = assinatura(b, chave);
+    let repetido: ExercicioBruto['repetido'];
+    if (naBiblioteca.has(a)) repetido = 'biblioteca';
+    else if (vistos.has(a)) repetido = 'lote';
+    vistos.add(a);
+    return { ...b, repetido, incluir: !repetido };
+  });
+}
+
+/** Índice do exercício do lote que representa cada posição (para as sessões). */
+export function representantes(
+  brutos: ExercicioBruto[],
+  chave: ChaveRepetido,
+): number[] {
+  const primeiro = new Map<string, number>();
+  return brutos.map((b, i) => {
+    const a = assinatura(b, chave);
+    if (!primeiro.has(a)) primeiro.set(a, i);
+    return primeiro.get(a)!;
+  });
 }
