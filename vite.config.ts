@@ -14,7 +14,12 @@ export default defineConfig({
       workbox: {
         // O pdf.worker é grande mas queremos a importação a funcionar offline.
         maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
-        globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
+        globPatterns: ['**/*.{js,mjs,css,html,svg,png,woff2}'],
+        // Uma versão nova entra em vigor de imediato e apaga a anterior. Sem
+        // isto, uma página aberta continua a pedir ficheiros que já não existem.
+        skipWaiting: true,
+        clientsClaim: true,
+        cleanupOutdatedCaches: true,
       },
       manifest: {
         name: 'Dossier do Treinador',
